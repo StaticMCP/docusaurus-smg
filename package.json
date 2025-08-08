@@ -1,0 +1,37 @@
+{
+  "name": "docusaurus-smg",
+  "version": "0.0.3",
+  "description": "Generate StaticMCP files from Docusaurus projects",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "bin": {
+    "docusaurus-smg": "./dist/src/index.js"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "prepare": "npm run build",
+    "test": "KEEP_OUTPUT=TRUE tsx tests/test.ts && CLEAN_OUTPUT=TRUE tsx tests/bridge-test.ts ./test-output"
+  },
+  "keywords": [
+    "staticmcp",
+    "mcp",
+    "docusaurus",
+    "documentation",
+    "generator"
+  ],
+  "author": "StaticMCP",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "24.2.1",
+    "nodemon": "3.1.10",
+    "tsx": "4.20.3",
+    "typescript": "5.9.2"
+  },
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/StaticMCP/docusaurus-smg.git"
+  }
+}
