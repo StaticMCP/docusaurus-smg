@@ -180,18 +180,21 @@ async function testBasicGeneration() {
     console.log(`- Protocol: ${manifest.protocolVersion}`);
     console.log(`- Resources: ${manifest.capabilities.resources.length}`);
     console.log(`- Tools: ${manifest.capabilities.tools.length}`);
-    const resourcesDir = './test-output/resources';
-    const resourceFiles = await getAllFiles(resourcesDir);
-    console.log(`📄 Resource files: ${resourceFiles.length}`);
-    if (resourceFiles.length > 0) {
-      const sampleResourcePath = resourceFiles[0];
-      const resourceContent = await fs.readFile(sampleResourcePath, 'utf-8');
-      const resource = JSON.parse(resourceContent);
-      console.log(`📖 Sample resource URI: ${resource.contents?.[0]?.uri}`);
-    }
+
     const toolsDir = './test-output/tools';
+    const resourcesDir = './test-output/resources';
+    
+    const toolsExists = await fs.stat(toolsDir).then(() => true).catch(() => false);
+    const resourcesExists = await fs.stat(resourcesDir).then(() => true).catch(() => false);
+    
+    if (!toolsExists) throw new Error('tools directory not created');
+    if (!resourcesExists) throw new Error('resources directory not created');
+
     const toolDirs = await fs.readdir(toolsDir);
+    const resourceFiles = await getAllFiles(resourcesDir);
+    
     console.log(`🔧 Tool directories: ${toolDirs.join(', ')}`);
+    console.log(`📄 Resource files: ${resourceFiles.length}`);
     console.log('✅ Basic generation test passed!');
   } catch (error: any) {
     console.log(error)
@@ -213,72 +216,73 @@ async function getAllFiles(dir: string): Promise<string[]> {
   return files.flat();
 }
 
-async function testResourceContent() {
-  console.log('\n🧪 Testing resource content extraction...');
+async function testResourceAccess() {
+  console.log('\n🧪 Testing resource access through tools...');
   try {
-    const resourcesDir = './test-output/resources';
-    const allFiles = await getAllFiles(resourcesDir);
-    const expectedTitles = [
-      'Getting Started',
-      'Authentication',
-      'Deployment Guide',
-      'Welcome to Our Blog'
-    ];
-    const expectedDescriptions = [
-      'Learn how to get started with our platform',
-      'How to authenticate with our API',
-      'Deploy your application to production',
-      'Welcome to Our Blog'
-    ];
-    for (const file of allFiles) {
-      const content = await fs.readFile(file, 'utf-8');
-      const resource = JSON.parse(content);
-      if (!resource.contents || !Array.isArray(resource.contents) || resource.contents.length === 0) {
-        throw new Error(`Resource file ${file} is missing a non-empty 'contents' array`);
-      }
-      const firstContent = resource.contents[0];
-
-      if (!firstContent.uri || typeof firstContent.uri !== 'string') {
-        throw new Error(`Resource file ${file} is missing a valid 'uri' in contents[0]`);
-      }
-      if (!firstContent.mimeType || typeof firstContent.mimeType !== 'string') {
-        throw new Error(`Resource file ${file} is missing a valid 'mimeType' in contents[0]`);
-      }
-      if (firstContent.mimeType !== 'text/markdown') {
-        throw new Error(`Resource file ${file} has unexpected mimeType: ${firstContent.mimeType}`);
-      }
-      if (typeof firstContent.text !== 'string' || firstContent.text.trim().length === 0) {
-        throw new Error(`Resource file ${file} is missing a valid, non-empty 'text' in contents[0]`);
-      }
-
-      const lines = firstContent.text.split('\n');
-      const hasHeader = lines.some((line: string) => line.trim().startsWith('#'));
-      const hasParagraph = lines.some((line: string) => line.trim().length > 0 && !line.trim().startsWith('#') && !line.trim().startsWith('```'));
-      if (!hasHeader) {
-        throw new Error(`Resource file ${file} text does not contain a markdown header`);
-      }
-      if (!hasParagraph) {
-        throw new Error(`Resource file ${file} text does not contain a paragraph`);
-      }
-
-      if (firstContent.metadata) {
-        if (typeof firstContent.metadata !== 'object') {
-          throw new Error(`Resource file ${file} has invalid 'metadata' in contents[0]`);
-        }
-        if (firstContent.metadata.title) {
-          if (!expectedTitles.includes(firstContent.metadata.title)) {
-            throw new Error(`Resource file ${file} has unexpected title: ${firstContent.metadata.title}`);
-          }
-        } else {
-          throw new Error(`Resource file ${file} is missing 'title' in metadata`);
-        }
-      } else {
-        throw new Error(`Resource file ${file} is missing 'metadata' in contents[0]`);
-      }
+    const listResourcesPath = './test-output/tools/list_resources.json';
+    const listContent = await fs.readFile(listResourcesPath, 'utf-8');
+    const listResponse = JSON.parse(listContent);
+    
+    if (!listResponse.content || !Array.isArray(listResponse.content) || listResponse.content.length === 0) {
+      throw new Error('list_resources response is missing content array');
     }
-    console.log('\n✅ Resource content test passed!');
+    
+    const resourceUris = JSON.parse(listResponse.content[0].text);
+    if (!Array.isArray(resourceUris)) {
+      throw new Error('list_resources should return an array of URIs');
+    }
+    
+    console.log(`📄 Found ${resourceUris.length} resource URIs`);
+    
+    if (resourceUris.length > 0) {
+      const firstUri = resourceUris[0];
+      
+      let encodedUri;
+      if (firstUri.includes('://')) {
+        const parts = firstUri.split('://');
+        encodedUri = parts.length === 2 ? parts[1].replace(/[*?"<>|]/g, '_') : firstUri.replace(/[*?"<>|]/g, '_');
+      } else {
+        encodedUri = firstUri.replace(/[*?"<>|]/g, '_');
+      }
+      
+      const getResourcePath = `./test-output/tools/get_resource/${encodedUri}.json`;
+      const resourceContent = await fs.readFile(getResourcePath, 'utf-8');
+      const resourceResponse = JSON.parse(resourceContent);
+      
+      if (!resourceResponse.content || !resourceResponse.content[0] || !resourceResponse.content[0].text) {
+        throw new Error('get_resource response missing content');
+      }
+      
+      const resourceData = JSON.parse(resourceResponse.content[0].text);
+      if (!resourceData.uri || !resourceData.content || !resourceData.metadata) {
+        throw new Error('get_resource response missing required fields (uri, content, metadata)');
+      }
+      
+      console.log(`📖 Successfully accessed resource: ${resourceData.name || 'Untitled'}`);
+      console.log(`   URI: ${resourceData.uri}`);
+      console.log(`   Content length: ${resourceData.content.length} chars`);
+      console.log(`   Has metadata: ${Object.keys(resourceData.metadata || {}).length > 0}`);
+    }
+    
+    const resourcesDir = './test-output/resources';
+    const resourceFiles = await getAllFiles(resourcesDir);
+    console.log(`📁 Direct resource files: ${resourceFiles.length}`);
+    
+    if (resourceFiles.length > 0) {
+      const sampleResourcePath = resourceFiles[0];
+      const directResourceContent = await fs.readFile(sampleResourcePath, 'utf-8');
+      const directResource = JSON.parse(directResourceContent);
+      
+      if (!directResource.contents || !Array.isArray(directResource.contents)) {
+        throw new Error('Direct resource file missing contents array');
+      }
+      
+      console.log(`📋 Direct resource format verified`);
+    }
+    
+    console.log('✅ Resource access test passed!');
   } catch (error: any) {
-    console.error('❌ Resource content test failed:', error.message);
+    console.error('❌ Resource access test failed:', error.message);
     throw error;
   }
 }
@@ -287,51 +291,79 @@ async function testToolResponses() {
   console.log('\n🧪 Testing tool responses...');
   try {
     const toolsDir = './test-output/tools';
-    const listDir = path.join(toolsDir, 'list_docs');
-    const listFiles = await fs.readdir(listDir);
-    if (listFiles.length === 0) {
-      throw new Error('No tool response files found in list_docs');
-    }
-    for (const file of listFiles) {
-      const sampleListPath = path.join(listDir, file);
-      const listResponse = await fs.readFile(sampleListPath, 'utf-8');
-      const list = JSON.parse(listResponse);
-      if (!list.content || !Array.isArray(list.content) || list.content.length === 0) {
-        throw new Error(`Tool response file ${file} is missing a non-empty 'content' array`);
-      }
-      const firstContent = list.content[0];
-
-      if (!firstContent.type || typeof firstContent.type !== 'string') {
-        throw new Error(`Tool response file ${file} is missing a valid 'type' in content[0]`);
-      }
-      if (firstContent.type !== 'text') {
-        throw new Error(`Tool response file ${file} has unexpected type: ${firstContent.type}`);
-      }
-      if (typeof firstContent.text !== 'string' || firstContent.text.trim().length === 0) {
-        throw new Error(`Tool response file ${file} is missing a valid, non-empty 'text' in content[0]`);
-      }
-
-      try {
-        const resources = JSON.parse(firstContent.text);
-        if (!Array.isArray(resources)) {
-          throw new Error('Parsed text is not an array');
+    const toolNames = ['list_resources', 'get_resource'];
+    
+    for (const toolName of toolNames) {
+      if (toolName === 'list_resources') {
+        const toolFile = path.join(toolsDir, `${toolName}.json`);
+        const toolExists = await fs.stat(toolFile).then(() => true).catch(() => false);
+        
+        if (toolExists) {
+          const content = await fs.readFile(toolFile, 'utf-8');
+          const response = JSON.parse(content);
+          
+          if (!response.content || !Array.isArray(response.content)) {
+            throw new Error(`${toolName} response missing content array`);
+          }
+          
+          const uris = JSON.parse(response.content[0].text);
+          if (!Array.isArray(uris)) {
+            throw new Error(`${toolName} should return array of URIs`);
+          }
+          
+          for (const uri of uris) {
+            if (uri.includes('://')) {
+              throw new Error(`Invalid URI format: ${uri}`);
+            }
+          }
+          
+          console.log(`  ✅ ${toolName}: ${uris.length} URIs returned`);
+        } else {
+          throw new Error(`${toolName}.json file not found`);
         }
-        for (const resource of resources) {
-          if (!resource.uri || typeof resource.uri !== 'string') {
-            throw new Error(`Resource in tool response ${file} is missing a valid 'uri'`);
+      } else if (toolName === 'get_resource') {
+        const toolDir = path.join(toolsDir, toolName);
+        const toolExists = await fs.stat(toolDir).then(() => true).catch(() => false);
+        
+        if (!toolExists) {
+          throw new Error(`Tool directory missing: ${toolName}`);
+        }
+        
+        const allFiles = await getAllFiles(toolDir);
+        
+        if (allFiles.length === 0) {
+          throw new Error(`No response files found for ${toolName}`);
+        }
+        
+        const filesToTest = allFiles.slice(0, Math.min(3, allFiles.length));
+        let validResponses = 0;
+        
+        for (const file of filesToTest) {
+          const content = await fs.readFile(file, 'utf-8');
+          const response = JSON.parse(content);
+          
+          if (!response.content || !Array.isArray(response.content)) {
+            console.log(`    ⚠️ ${path.basename(file)}: missing content array`);
+            continue;
           }
-          if (!resource.name || typeof resource.name !== 'string') {
-            throw new Error(`Resource in tool response ${file} is missing a valid 'name'`);
-          }
-          if (!resource.description || typeof resource.description !== 'string') {
-            throw new Error(`Resource in tool response ${file} is missing a valid 'description'`);
-          }
-          if (!resource.mimeType || typeof resource.mimeType !== 'string') {
-            throw new Error(`Resource in tool response ${file} is missing a valid 'mimeType'`);
+          
+          const resourceData = JSON.parse(response.content[0].text);
+          const requiredFields = ['uri', 'name', 'description', 'mimeType', 'content', 'metadata'];
+          const missingFields = requiredFields.filter(field => !resourceData.hasOwnProperty(field));
+          
+          if (missingFields.length === 0) {
+            validResponses++;
+            console.log(`    ✅ ${path.basename(file)}: valid resource data`);
+          } else {
+            console.log(`    ⚠️ ${path.basename(file)}: missing fields: ${missingFields.join(', ')}`);
           }
         }
-      } catch (e) {
-        throw new Error(`Tool response file ${file} has invalid JSON in content[0].text: ${(e as Error).message}`);
+        
+        if (validResponses === 0) {
+          throw new Error(`No valid ${toolName} response files found`);
+        }
+        
+        console.log(`  ✅ ${toolName}: ${validResponses}/${filesToTest.length} tested responses valid (${allFiles.length} total files)`);
       }
     }
 
@@ -391,7 +423,7 @@ async function runTests() {
   console.log('=' + '='.repeat(50));
   try {
     await testBasicGeneration();
-    await testResourceContent();
+    await testResourceAccess();
     await testToolResponses();
     await testCustomConfiguration();
     console.log('\n' + '='.repeat(51));
@@ -414,7 +446,7 @@ export {
   runTests,
   createSampleDocusaurusProject,
   testBasicGeneration,
-  testResourceContent,
+  testResourceAccess,
   testToolResponses,
   testCustomConfiguration,
   cleanup

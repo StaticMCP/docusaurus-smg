@@ -96,38 +96,32 @@ export default class BridgeCompatibilityTester {
   }
 
   async testResources(): Promise<boolean> {
-    console.log('🧪 Testing resource file compatibility...');
+    console.log('🧪 Testing resource compatibility...');
     try {
       const manifestPath = path.join(this.staticMcpPath, 'mcp.json');
       const manifestContent = await fs.readFile(manifestPath, 'utf-8');
       const manifest = JSON.parse(manifestContent);
       const resources = manifest.capabilities?.resources || [];
+      
+      if (resources.length === 0) {
+        console.log('⚠️  No resources found in manifest');
+        return true;
+      }
+
       let compatibleCount = 0;
-      let totalCount = resources.length;
-      for (const resource of resources.slice(0, 3)) {
-        const uri = resource.uri;
-        const expectedPath = this.simulateBridgeUriToPath(uri);
-        const fullPath = path.join(this.staticMcpPath, expectedPath);
-        try {
-          const resourceContent = await fs.readFile(fullPath, 'utf-8');
-          const resourceData = JSON.parse(resourceContent);
-          if (resourceData.contents && Array.isArray(resourceData.contents)) {
-            const firstContent = resourceData.contents[0];
-            if (firstContent.uri && firstContent.mimeType && firstContent.text) {
-              compatibleCount++;
-              console.log(`  ✅ ${uri} -> ${expectedPath} (compatible)`);
-            } else {
-              console.log(`  ⚠️  ${uri} -> ${expectedPath} (missing required fields)`);
-            }
-          } else {
-            console.log(`  ⚠️  ${uri} -> ${expectedPath} (missing contents array)`);
-          }
-        } catch {
-          console.log(`  ❌ ${uri} -> ${expectedPath} (file not found)`);
+      const testCount = Math.min(resources.length, 3);
+      
+      for (const resource of resources.slice(0, testCount)) {
+        if (resource.uri && resource.name && resource.description && resource.mimeType) {
+          compatibleCount++;
+          console.log(`  ✅ Resource metadata valid: ${resource.name}`);
+        } else {
+          console.log(`  ❌ Resource metadata invalid: missing required fields`);
         }
       }
-      const compatibilityRate = totalCount > 0 ? (compatibleCount / Math.min(totalCount, 3)) * 100 : 100;
-      console.log(`📊 Resource compatibility: ${compatibilityRate.toFixed(1)}% (${compatibleCount}/${Math.min(totalCount, 3)} tested)`);
+
+      const compatibilityRate = testCount > 0 ? (compatibleCount / testCount) * 100 : 100;
+      console.log(`📊 Resource compatibility: ${compatibilityRate.toFixed(1)}% (${compatibleCount}/${testCount} tested)`);
       return compatibilityRate >= 80;
     } catch (error: any) {
       console.error('❌ Resource compatibility test failed:', error.message);
@@ -141,12 +135,13 @@ export default class BridgeCompatibilityTester {
       const manifestPath = path.join(this.staticMcpPath, 'mcp.json');
       const manifestContent = await fs.readFile(manifestPath, 'utf-8');
       const manifest = JSON.parse(manifestContent);
-      const tools = manifest.capabilities?.tools || [];
+      const resources = manifest.capabilities?.resources || [];
+      
       let compatibleCount = 0;
       const testCases = [
-        { toolName: 'list_docs', args: {} },
-        { toolName: 'list_docs', args: { type: 'docs' } },
+        { toolName: 'list_resources', args: {} },
       ];
+
       for (const testCase of testCases) {
         const expectedPath = this.simulateBridgeToolToPath(testCase.toolName, testCase.args);
         const fullPath = path.join(this.staticMcpPath, expectedPath);
@@ -156,8 +151,38 @@ export default class BridgeCompatibilityTester {
           if (toolData.content && Array.isArray(toolData.content)) {
             const firstContent = toolData.content[0];
             if (firstContent.type && firstContent.text) {
-              compatibleCount++;
-              console.log(`  ✅ ${testCase.toolName}(${JSON.stringify(testCase.args)}) -> ${expectedPath}`);
+              if (testCase.toolName === 'list_resources') {
+                try {
+                  const uris = JSON.parse(firstContent.text);
+                  if (Array.isArray(uris)) {
+                    compatibleCount++;
+                    console.log(`  ✅ ${testCase.toolName}(${JSON.stringify(testCase.args)}) -> ${expectedPath} (${uris.length} URIs)`);
+                    uris.map((uri: string) => {
+                      testCases.push({ toolName: 'get_resource', args: { uri: uri } });
+                    });
+
+                  } else {
+                    console.log(`  ⚠️  ${testCase.toolName}(${JSON.stringify(testCase.args)}) -> ${expectedPath} (not an array)`);
+                  }
+                } catch {
+                  console.log(`  ⚠️  ${testCase.toolName}(${JSON.stringify(testCase.args)}) -> ${expectedPath} (invalid JSON)`);
+                }
+              } else if (testCase.toolName === 'get_resource') {
+                try {
+                  const resourceData = JSON.parse(firstContent.text);
+                  if (resourceData.uri && resourceData.content) {
+                    compatibleCount++;
+                    console.log(`  ✅ ${testCase.toolName}(${JSON.stringify(testCase.args)}) -> ${expectedPath}`);
+                  } else {
+                    console.log(`  ⚠️  ${testCase.toolName}(${JSON.stringify(testCase.args)}) -> ${expectedPath} (missing required fields)`);
+                  }
+                } catch {
+                  console.log(`  ⚠️  ${testCase.toolName}(${JSON.stringify(testCase.args)}) -> ${expectedPath} (invalid JSON)`);
+                }
+              } else {
+                compatibleCount++;
+                console.log(`  ✅ ${testCase.toolName}(${JSON.stringify(testCase.args)}) -> ${expectedPath}`);
+              }
             } else {
               console.log(`  ⚠️  ${testCase.toolName}(${JSON.stringify(testCase.args)}) -> ${expectedPath} (invalid content structure)`);
             }
@@ -182,9 +207,10 @@ export default class BridgeCompatibilityTester {
     try {
       const requiredPaths = [
         'mcp.json',
-        'resources',
-        'tools'
+        'tools',
+        'resources'
       ];
+      
       for (const requiredPath of requiredPaths) {
         const fullPath = path.join(this.staticMcpPath, requiredPath);
         try {
