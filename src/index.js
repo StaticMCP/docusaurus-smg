@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import fs from 'fs/promises';
 import path from 'path';
-import crypto from 'crypto';
 import { realpathSync } from 'fs';
 import { fileURLToPath } from 'url';
 class StaticMCPGenerator {
@@ -20,36 +19,22 @@ class StaticMCPGenerator {
         this.resources = [];
         this.tools = [];
     }
-    /**
-     * Parse frontmatter from markdown content
-     * Supports both YAML (---) and JSON ({}) frontmatter
-     */
     parseFrontmatter(content) {
         const yamlMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
         if (yamlMatch) {
-            const yamlContent = yamlMatch[1];
-            const markdownContent = yamlMatch[2];
-            const data = this.parseYaml(yamlContent);
-            return { data, content: markdownContent };
+            return { data: this.parseYaml(yamlMatch[1]), content: yamlMatch[2] };
         }
         const jsonMatch = content.match(/^{\s*\n([\s\S]*?)\n}\s*\n([\s\S]*)$/);
         if (jsonMatch) {
-            const jsonContent = `{${jsonMatch[1]}}`;
-            const markdownContent = jsonMatch[2];
             try {
-                const data = JSON.parse(jsonContent);
-                return { data, content: markdownContent };
+                return { data: JSON.parse(`{${jsonMatch[1]}}`), content: jsonMatch[2] };
             }
-            catch (error) {
+            catch {
                 console.warn('Failed to parse JSON frontmatter, treating as regular content');
             }
         }
         return { data: {}, content };
     }
-    /**
-     * Simple YAML parser for basic frontmatter
-     * Handles strings, numbers, booleans, and arrays
-     */
     parseYaml(yamlContent) {
         const result = {};
         const lines = yamlContent.split('\n');
@@ -62,56 +47,41 @@ class StaticMCPGenerator {
                 continue;
             const key = line.substring(0, colonIndex).trim();
             let value = line.substring(colonIndex + 1).trim();
-            // Handle multiline values or arrays
             if (value === '' || value === '|' || value === '>') {
                 const multilineValue = this.parseMultilineValue(lines, i);
                 result[key] = multilineValue.value;
                 i = multilineValue.lastIndex;
                 continue;
             }
-            // Handle arrays on single line
             if (value.startsWith('[') && value.endsWith(']')) {
                 try {
                     result[key] = JSON.parse(value);
                     continue;
                 }
-                catch (error) {
-                    // Fall through to string parsing
-                }
+                catch { }
             }
-            // Handle quoted strings
             if ((value.startsWith('"') && value.endsWith('"')) ||
                 (value.startsWith("'") && value.endsWith("'"))) {
                 result[key] = value.slice(1, -1);
-                continue;
             }
-            // Handle booleans
-            if (value === 'true') {
+            else if (value === 'true') {
                 result[key] = true;
-                continue;
             }
-            if (value === 'false') {
+            else if (value === 'false') {
                 result[key] = false;
-                continue;
             }
-            // Handle numbers
-            if (!isNaN(Number(value)) && value !== '') {
+            else if (!isNaN(Number(value)) && value !== '') {
                 result[key] = Number(value);
-                continue;
             }
-            // Default to string
-            result[key] = value;
+            else {
+                result[key] = value;
+            }
         }
         return result;
     }
-    /**
-     * Parse multiline YAML values (arrays, literal blocks, etc.)
-     */
     parseMultilineValue(lines, startIndex) {
         const startLine = lines[startIndex];
-        const key = startLine.substring(0, startLine.indexOf(':')).trim();
         let value = startLine.substring(startLine.indexOf(':') + 1).trim();
-        // Determine the indentation level
         let baseIndent = 0;
         for (let i = startIndex + 1; i < lines.length; i++) {
             const line = lines[i];
@@ -122,7 +92,6 @@ class StaticMCPGenerator {
         }
         const values = [];
         let i = startIndex + 1;
-        // Handle literal block scalars (|)
         if (value === '|') {
             for (; i < lines.length; i++) {
                 const line = lines[i];
@@ -139,7 +108,6 @@ class StaticMCPGenerator {
             }
             return { value: values.join('\n'), lastIndex: i };
         }
-        // Handle folded block scalars (>)
         if (value === '>') {
             for (; i < lines.length; i++) {
                 const line = lines[i];
@@ -154,7 +122,6 @@ class StaticMCPGenerator {
             }
             return { value: values.join(' '), lastIndex: i };
         }
-        // Handle arrays
         for (; i < lines.length; i++) {
             const line = lines[i];
             if (line.trim() === '')
@@ -168,11 +135,8 @@ class StaticMCPGenerator {
             if (trimmed.startsWith('- ')) {
                 values.push(trimmed.substring(2));
             }
-            else if (indent >= baseIndent) {
-                // Continuation of previous value
-                if (values.length > 0) {
-                    values[values.length - 1] += ' ' + trimmed;
-                }
+            else if (indent >= baseIndent && values.length > 0) {
+                values[values.length - 1] += ' ' + trimmed;
             }
             else {
                 i--;
@@ -184,8 +148,7 @@ class StaticMCPGenerator {
     async generate(inputPath) {
         console.log(`Generating StaticMCP server from: ${inputPath}`);
         await this.cleanOutputDir();
-        const isSourceDir = await this.isDocusaurusSource(inputPath);
-        if (!isSourceDir) {
+        if (!await this.isDocusaurusSource(inputPath)) {
             throw new Error('Not a Docusaurus source directory (missing docusaurus.config.js or docusaurus.config.ts)');
         }
         await this.processSourceDirectory(inputPath);
@@ -205,34 +168,28 @@ class StaticMCPGenerator {
     }
     async processSourceDirectory(inputPath) {
         console.log('Processing Docusaurus source directory...');
-        const docsPath = path.join(inputPath, 'docs');
-        const blogPath = path.join(inputPath, 'blog');
-        const pagesPath = path.join(inputPath, 'src', 'pages');
-        try {
-            await fs.access(docsPath);
-            await this.processMarkdownDirectory(docsPath, 'docs');
+        const paths = [
+            { dir: path.join(inputPath, 'docs'), type: 'docs' },
+            { dir: path.join(inputPath, 'blog'), type: 'blog' },
+            { dir: path.join(inputPath, 'src', 'pages'), type: 'pages' }
+        ];
+        for (const { dir, type } of paths) {
+            try {
+                await fs.access(dir);
+                await this.processMarkdownDirectory(dir, type, inputPath);
+            }
+            catch { }
         }
-        catch { }
-        try {
-            await fs.access(blogPath);
-            await this.processMarkdownDirectory(blogPath, 'blog');
-        }
-        catch { }
-        try {
-            await fs.access(pagesPath);
-            await this.processMarkdownDirectory(pagesPath, 'pages');
-        }
-        catch { }
     }
-    async processMarkdownDirectory(dirPath, type) {
+    async processMarkdownDirectory(dirPath, type, inputPath) {
         const files = await this.getMarkdownFiles(dirPath);
         for (const filePath of files) {
-            await this.processMarkdownFile(filePath, type);
+            await this.processMarkdownFile(filePath, type, inputPath);
         }
     }
     async getMarkdownFiles(dirPath) {
         const files = [];
-        async function scan(currentPath) {
+        const scan = async (currentPath) => {
             const entries = await fs.readdir(currentPath, { withFileTypes: true });
             for (const entry of entries) {
                 const fullPath = path.join(currentPath, entry.name);
@@ -243,23 +200,23 @@ class StaticMCPGenerator {
                     files.push(fullPath);
                 }
             }
-        }
+        };
         await scan(dirPath);
         return files;
     }
-    async processMarkdownFile(filePath, type) {
+    async processMarkdownFile(filePath, type, inputPath) {
         const content = await fs.readFile(filePath, 'utf-8');
         const parsed = this.parseFrontmatter(content);
-        const relativePath = path.relative(process.cwd(), filePath);
-        const uriPath = relativePath
-            .replace(/\.(md|mdx)$/, '')
-            .replace(/\\/g, '/');
+        const relativePath = path.relative(inputPath, filePath);
+        const uriPath = relativePath.replace(/\.(md|mdx)$/, '').replace(/\\/g, '/');
         const uri = `${this.options.baseUri}://${uriPath}`;
         const resource = {
             uri,
             name: parsed.data.title || path.basename(filePath, path.extname(filePath)),
             description: parsed.data.description || `${type} content: ${parsed.data.title || 'Untitled'}`,
-            mimeType: 'text/markdown'
+            mimeType: 'text/markdown',
+            content: parsed.content,
+            metadata: parsed.data
         };
         this.resources.push(resource);
         await this.saveResourceContent(uri, parsed.data, parsed.content);
@@ -268,16 +225,13 @@ class StaticMCPGenerator {
         const resourcesDir = path.join(this.options.outputDir, 'resources');
         const filename = this.encodeUriForFilename(uri);
         const filePath = path.join(resourcesDir, `${filename}.json`);
-        const fileDir = path.dirname(filePath);
-        await fs.mkdir(fileDir, { recursive: true });
+        await fs.mkdir(path.dirname(filePath), { recursive: true });
         const resourceResponse = {
-            contents: [
-                {
+            contents: [{
                     uri,
                     mimeType: 'text/markdown',
                     text: content
-                }
-            ]
+                }]
         };
         if (Object.keys(frontmatter).length > 0) {
             resourceResponse.contents[0].metadata = frontmatter;
@@ -293,24 +247,28 @@ class StaticMCPGenerator {
         }
         return uri.replace(/[*?"<>|]/g, '_');
     }
-    generateListTool() {
-        return {
-            name: 'list_docs',
-            description: 'List available documentation',
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    type: {
-                        type: 'string',
-                        enum: ['docs', 'blog', 'all'],
-                        description: 'Type of content to list'
-                    }
+    generateResourceTools() {
+        return [
+            {
+                name: 'list_resources',
+                description: 'List all available resource URIs that can be used with get_resource',
+                inputSchema: { type: 'object', properties: {} }
+            },
+            {
+                name: 'get_resource',
+                description: 'Get the content of a specific resource by URI',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        uri: { type: 'string', description: 'URI of the resource to retrieve' }
+                    },
+                    required: ['uri']
                 }
             }
-        };
+        ];
     }
     async generateManifest() {
-        this.tools.push(this.generateListTool());
+        this.tools.push(...this.generateResourceTools());
         const manifest = {
             protocolVersion: this.options.protocolVersion,
             serverInfo: {
@@ -318,19 +276,25 @@ class StaticMCPGenerator {
                 version: this.options.serverVersion
             },
             capabilities: {
-                resources: this.resources,
+                resources: this.resources.map(r => ({
+                    uri: r.uri,
+                    name: r.name,
+                    description: r.description,
+                    mimeType: r.mimeType
+                })),
                 tools: this.tools
             }
         };
-        const manifestPath = path.join(this.options.outputDir, 'mcp.json');
-        await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+        await fs.writeFile(path.join(this.options.outputDir, 'mcp.json'), JSON.stringify(manifest, null, 2));
         await this.createToolsDirectory();
     }
     async createToolsDirectory() {
-        const toolsDir = path.join(this.options.outputDir, 'tools');
+        await fs.mkdir(path.join(this.options.outputDir, 'tools'), { recursive: true });
         for (const tool of this.tools) {
-            const toolDir = path.join(toolsDir, tool.name);
-            await fs.mkdir(toolDir, { recursive: true });
+            const toolDir = path.join(this.options.outputDir, 'tools', tool.name);
+            if (tool.inputSchema.properties.length > 0) {
+                await fs.mkdir(toolDir, { recursive: true });
+            }
             await this.createSampleToolResponses(toolDir, tool);
         }
     }
@@ -350,86 +314,77 @@ class StaticMCPGenerator {
         }
         if (Object.keys(params).length === 1) {
             const argValue = Object.values(params)[0];
-            let argStr;
-            if (typeof argValue === 'string') {
-                argStr = argValue;
+            let argStr = String(argValue);
+            if (typeof argValue === 'string' && argValue.includes('://')) {
+                const parts = argValue.split('://');
+                argStr = parts.length === 2 ? parts[1] : argValue;
             }
-            else if (typeof argValue === 'number' || typeof argValue === 'boolean') {
-                argStr = argValue.toString();
-            }
-            else {
-                argStr = JSON.stringify(argValue);
-            }
+            argStr = argStr.replace(/[*?"<>|]/g, '_');
             const bridgePath = path.join(toolDir, `${argStr}.json`);
+            await fs.mkdir(path.dirname(bridgePath), { recursive: true });
             await fs.writeFile(bridgePath, JSON.stringify(response, null, 2));
         }
         if (Object.keys(params).length === 2) {
             const values = Object.values(params).map(v => {
-                if (typeof v === 'string')
-                    return v;
-                if (typeof v === 'number' || typeof v === 'boolean')
-                    return v.toString();
-                return JSON.stringify(v);
+                let str = String(v);
+                if (typeof v === 'string' && v.includes('://')) {
+                    const parts = v.split('://');
+                    str = parts.length === 2 ? parts[1] : v;
+                }
+                return str.replace(/[*?"<>|]/g, '_');
             }).sort();
             const subDir = path.join(toolDir, values[0]);
             await fs.mkdir(subDir, { recursive: true });
-            const bridgePath = path.join(subDir, `${values[1]}.json`);
-            await fs.writeFile(bridgePath, JSON.stringify(response, null, 2));
+            await fs.writeFile(path.join(subDir, `${values[1]}.json`), JSON.stringify(response, null, 2));
         }
     }
     generateSampleParams(tool) {
-        const samples = [];
-        if (tool.name === 'list_docs') {
-            samples.push({}, { type: 'docs' }, { type: 'blog' }, { type: 'all' });
+        if (tool.name === 'list_resources') {
+            return [{}];
         }
-        return samples;
-    }
-    hashParams(params) {
-        if (Object.keys(params).length <= 2) {
-            const paramString = JSON.stringify(params, Object.keys(params).sort());
-            return crypto.createHash('md5').update(paramString).digest('hex').substring(0, 8);
+        if (tool.name === 'get_resource') {
+            return this.resources.map(resource => ({ uri: resource.uri }));
         }
-        const sortedArgs = Object.entries(params)
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([k, v]) => {
-            let valStr;
-            if (typeof v === 'string')
-                valStr = v;
-            else if (typeof v === 'number' || typeof v === 'boolean')
-                valStr = v.toString();
-            else
-                valStr = JSON.stringify(v);
-            return `${k}=${valStr}`;
-        })
-            .join('&');
-        const base64Hash = Buffer.from(sortedArgs).toString('base64')
-            .replace(/[/+]/g, '_')
-            .replace(/=/g, '');
-        return base64Hash.substring(0, 16);
+        return [];
     }
     generateToolResponse(toolName, params) {
-        if (toolName === 'list_docs') {
-            const filteredResources = this.resources.filter(resource => {
-                if (!params.type || params.type === 'all')
-                    return true;
-                return resource.uri.includes(params.type);
-            });
+        if (toolName === 'list_resources') {
             return {
-                content: [
-                    {
+                content: [{
                         type: 'text',
-                        text: JSON.stringify(filteredResources, null, 2)
-                    }
-                ]
+                        text: JSON.stringify(this.resources.map(r => this.encodeUriForFilename(r.uri)), null, 2)
+                    }]
+            };
+        }
+        if (toolName === 'get_resource') {
+            const resource = this.resources.find(r => r.uri === params.uri);
+            if (!resource) {
+                return {
+                    content: [{
+                            type: 'text',
+                            text: JSON.stringify({ error: 'Resource not found' }, null, 2)
+                        }]
+                };
+            }
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            uri: resource.uri,
+                            name: resource.name,
+                            description: resource.description,
+                            mimeType: resource.mimeType,
+                            content: resource.content,
+                            metadata: resource.metadata
+                        }, null, 2)
+                    }]
             };
         }
         return {
-            content: [
-                {
+            content: [{
                     type: 'text',
                     text: 'Tool response not implemented'
-                }
-            ]
+                }]
         };
     }
     async cleanOutputDir() {
